@@ -1,10 +1,12 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useApp } from '../lib/context.js';
 import * as ops from '../lib/ops.js';
-import { parseFcjson } from '../lib/fcjson.js';
+import { IMPORT_ACCEPT, readPatternFile } from '../lib/importers.js';
 import { FABRIC_COUNTS } from '../lib/skeins.js';
+import { fabricSize, fmtInches } from '../lib/fabric.js';
 import { fmtSkeins, plural, uid } from '../lib/utils.js';
 import ColorPicker from './ColorPicker.jsx';
+import { FabricSuggestion, ProjectSupplies } from './ProjectExtras.jsx';
 import { ColorCell, Confirm, Empty, Icon, Modal, Stepper } from './ui.jsx';
 
 const STATUS = { planned: 'Planned', inprogress: 'In progress', completed: 'Completed' };
@@ -18,16 +20,19 @@ export default function Projects({ projectId }) {
 function useImporter() {
   const { toast } = useApp();
   const [pending, setPending] = useState(null);
+  const [busy, setBusy] = useState(false);
   const read = async (file) => {
     if (!file) return;
+    setBusy(true);
     try {
-      const parsed = parseFcjson(await file.text(), file.name);
-      setPending(parsed);
+      setPending(await readPatternFile(file));
     } catch (e) {
       toast(e.message, 'bad');
+    } finally {
+      setBusy(false);
     }
   };
-  return { pending, setPending, read };
+  return { pending, setPending, read, busy };
 }
 
 function ProjectList() {
@@ -53,10 +58,10 @@ function ProjectList() {
       onDrop={(e) => { e.preventDefault(); setOver(false); imp.read(e.dataTransfer.files?.[0]); }}
     >
       <div className="page-head">
-        <div><h1>Projects</h1><p className="muted">Import a FlossCross chart to match it against your supply.</p></div>
+        <div><h1>Projects</h1><p className="muted">Import a chart (.fcjson, .oxs or PDF) to match it against your supply.</p></div>
         <div className="row">
-          <input ref={fileRef} type="file" accept=".fcjson,.json,application/json" hidden onChange={(e) => { imp.read(e.target.files?.[0]); e.target.value = ''; }} />
-          <button className="btn primary" onClick={() => fileRef.current.click()}>Import .fcjson</button>
+          <input ref={fileRef} type="file" accept={IMPORT_ACCEPT} hidden onChange={(e) => { imp.read(e.target.files?.[0]); e.target.value = ''; }} />
+          <button className="btn primary" disabled={imp.busy} onClick={() => fileRef.current.click()}>{imp.busy ? 'Reading file…' : 'Import chart'}</button>
           <button className="btn" onClick={() => setNaming(true)}>New project</button>
         </div>
       </div>
@@ -71,9 +76,9 @@ function ProjectList() {
 
       {state.projects.length === 0 ? (
         <div className={'dropzone' + (over ? ' over' : '')}>
-          <h3 style={{ color: 'inherit' }}>Drop a .fcjson file here</h3>
-          <p style={{ margin: '6px 0 14px' }}>or choose one. FlossCross exports list every color and how many stitches use it.</p>
-          <button className="btn" onClick={() => fileRef.current.click()}>Choose a file</button>
+          <h3 style={{ color: 'inherit' }}>Drop a pattern file here</h3>
+          <p style={{ margin: '6px 0 14px' }}>FlossCross (.fcjson), OXS from MacStitch and others (.oxs), or a pattern PDF. Charts list every color and how many stitches use it; PDFs are read from the thread key and you review the result first.</p>
+          <button className="btn" disabled={imp.busy} onClick={() => fileRef.current.click()}>{imp.busy ? 'Reading file…' : 'Choose a file'}</button>
         </div>
       ) : (
         <div className="project-grid">
@@ -84,7 +89,7 @@ function ProjectList() {
             return (
               <button key={p.id} className="panel project-card" onClick={() => go('projects/' + p.id)}>
                 <div className="row spread"><h3>{p.name}</h3><span className={'pill' + (done ? ' ok' : p.status === 'inprogress' ? ' accent' : '')}>{STATUS[p.status]}</span></div>
-                <div className="muted small">{plural(t.colors, 'color')}{t.stitches ? ` · ${t.stitches.toLocaleString()} stitches` : ''}{p.source?.width ? ` · ${p.source.width}×${p.source.height}` : ''}</div>
+                <div className="muted small">{plural(t.colors, 'color')}{t.stitches ? ` · ${t.stitches.toLocaleString()} stitches` : ''}{p.size?.w ? ` · ${p.size.w}×${p.size.h}` : ''}</div>
                 {!done && (<>
                   <div className="meter"><i style={{ width: pct + '%' }} /></div>
                   <div className="small muted">{t.covered} of {t.needed} colors covered{t.toBuy > 0 ? ` · ${plural(t.toBuy, 'skein')} to buy` : ''}</div>
@@ -99,40 +104,66 @@ function ProjectList() {
   );
 }
 
+const SOURCE_LABEL = { fcjson: 'FlossCross chart', oxs: 'OXS chart', pdf: 'PDF pattern' };
+
 function ImportDialog({ parsed, onClose }) {
   const { state, update, catalog, go, toast } = useApp();
   const [name, setName] = useState(parsed.suggestedName || parsed.title || 'New project');
-  const [fabric, setFabric] = useState(state.settings.defaultFabricCount);
+  const [fabric, setFabric] = useState(parsed.fabricCount || state.settings.defaultFabricCount);
   const [strands, setStrands] = useState(parsed.strands);
-  const unknown = parsed.colors.filter((c) => !catalog.find(c.brand, c.code));
+  const [removed, setRemoved] = useState(() => new Set());
+  const [needs, setNeeds] = useState({});
+  const [extra, setExtra] = useState([]);
+  const isPdf = parsed.source === 'pdf';
+
+  // Match file colors to the catalog (BLANC -> White, case differences) and merge any that collapse together.
+  const colors = useMemo(() => {
+    const map = new Map();
+    for (const c of parsed.colors) {
+      const hit = catalog.resolveCode(c.code, c.brand);
+      const key = hit ? hit.key : c.key;
+      const cur = map.get(key);
+      if (cur) { cur.stitches += c.stitches; cur.bsStitches += c.bsStitches; continue; }
+      map.set(key, { ...(hit ? { brand: hit.brand, code: hit.code, name: hit.name, hex: hit.hex, colors: hit.colors, type: hit.type } : c), key, known: !!hit, stitches: c.stitches, bsStitches: c.bsStitches, need: c.need ?? null, meters: c.meters });
+    }
+    for (const c of extra) if (!map.has(c.key)) map.set(c.key, { ...c, known: true, stitches: 0, bsStitches: 0, need: 1 });
+    const list = [...map.values()];
+    return isPdf ? list : list.sort((a, b) => b.stitches + b.bsStitches - (a.stitches + a.bsStitches));
+  }, [parsed, catalog, extra, isPdf]);
+  const kept = colors.filter((c) => !removed.has(c.key));
+  const unknown = kept.filter((c) => !c.known);
+  const needOf = (c) => needs[c.key] ?? c.need;
 
   const create = () => {
+    if (!kept.length) return toast('Keep at least one color.', 'bad');
     const id = uid();
     update((s) => {
       let next = s;
       const custom = unknown.filter((c) => !s.customColors.some((x) => x.brand === c.brand && x.code === c.code));
-      if (custom.length) next = { ...next, customColors: [...next.customColors, ...custom.map((c) => ({ brand: c.brand, code: c.code, name: c.name, hex: c.hex }))] };
+      if (custom.length) next = { ...next, customColors: [...next.customColors, ...custom.map((c) => ({ brand: c.brand, code: c.code, name: c.name, hex: c.hex, pending: true }))] };
       return ops.addProject(next, ops.makeProject({
         id, name: name.trim() || 'Imported chart', fabricCount: fabric, strands, bsStrands: parsed.bsStrands, waste: s.settings.defaultWaste,
-        source: { title: parsed.title, width: parsed.width, height: parsed.height },
-        colors: parsed.colors.map((c) => ops.makeProjectColor(catalog.find(c.brand, c.code) || c, { stitches: c.stitches, bsStitches: c.bsStitches })),
+        source: { title: parsed.title, width: parsed.width, height: parsed.height, type: parsed.source },
+        size: { w: parsed.width, h: parsed.height },
+        colors: kept.map((c) => ops.makeProjectColor(c, { stitches: c.stitches, bsStitches: c.bsStitches, need: needOf(c) ?? null })),
       }));
     });
-    toast(`Imported ${parsed.colors.length} colors`);
+    toast(`Imported ${plural(kept.length, 'color')}`);
     onClose();
     go('projects/' + id);
   };
 
   return (
-    <Modal title="Import chart" onClose={onClose} footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" onClick={create}>Create project</button></>}>
+    <Modal title={isPdf ? 'Review PDF import' : 'Import chart'} onClose={onClose} footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" onClick={create}>Create project</button></>}>
+      <p className="muted small">{SOURCE_LABEL[parsed.source] || 'Chart'}{parsed.software ? ` from ${parsed.software}` : ''}</p>
       <div className="field">
         <label htmlFor="pn">Project name</label>
         <input id="pn" className="input" value={name} onChange={(e) => setName(e.target.value)} />
         {parsed.title && parsed.title !== name && <button className="btn small ghost" style={{ alignSelf: 'flex-start' }} onClick={() => setName(parsed.title)}>Use chart title “{parsed.title}”</button>}
       </div>
-      <p className="muted">{parsed.width}×{parsed.height} stitches · {plural(parsed.colors.length, 'color')} · {parsed.totalStitches.toLocaleString()} stitches</p>
+      <p className="muted">{parsed.width ? `${parsed.width}×${parsed.height} stitches · ` : ''}{plural(kept.length, 'color')}{parsed.totalStitches ? ` · ${parsed.totalStitches.toLocaleString()} stitches` : ''}{parsed.backstitchCount ? ` · ${parsed.backstitchCount} backstitches` : ''}</p>
       <div className="field-grid">
-        <div className="field"><label htmlFor="fc">Fabric count</label>
+        <div className="field"><label htmlFor="fc">Fabric count{parsed.fabricCount ? ' (from the file)' : ''}</label>
           <select id="fc" className="input" value={FABRIC_COUNTS.includes(fabric) ? fabric : 'custom'} onChange={(e) => setFabric(e.target.value === 'custom' ? 28 : Number(e.target.value))}>
             {FABRIC_COUNTS.map((n) => <option key={n} value={n}>{n} count</option>)}<option value="custom">Custom…</option>
           </select>
@@ -141,12 +172,24 @@ function ImportDialog({ parsed, onClose }) {
         <div className="field"><label>Strands</label><Stepper label="Strands" value={strands} min={1} max={6} onChange={setStrands} /></div>
       </div>
       {parsed.warnings.map((w) => <div className="banner info" key={w}>{w}</div>)}
-      {unknown.length > 0 && <div className="banner info">{plural(unknown.length, 'color')} {unknown.length === 1 ? 'is' : 'are'} not in the built-in catalog ({unknown.map((c) => c.code).join(', ')}). They will be added from the file.</div>}
+      {isPdf && <div className="banner">PDF layouts vary. Check each color below: remove anything that is not a thread, fix the skein amounts, and add anything that is missing.</div>}
+      {unknown.length > 0 && <div className="banner info">{plural(unknown.length, 'color')} {unknown.length === 1 ? 'is' : 'are'} not in the built-in catalog ({unknown.map((c) => c.code).join(', ')}). They will be added and marked “Needs details” so you can fix them later.</div>}
       <div className="panel flush"><div className="list">
-        {parsed.colors.map((c) => (
-          <div className="item" key={c.key}><div className="grow"><ColorCell color={c} /></div><span className="muted small">{c.stitches.toLocaleString()} stitches</span></div>
+        {kept.map((c) => (
+          <div className="item" key={c.key} style={{ flexWrap: 'wrap' }}>
+            <div className="grow"><ColorCell color={c} sub={isPdf && c.name && c.known ? `PDF: ${c.name}` : undefined} /></div>
+            {c.stitches > 0 || c.need == null
+              ? <span className="muted small">{c.stitches.toLocaleString()} stitches</span>
+              : <Stepper small label={`Skeins of ${c.code}`} value={needOf(c)} step={0.25} onChange={(v) => setNeeds((n) => ({ ...n, [c.key]: v }))} />}
+            <button className="icon-btn" aria-label={`Remove ${c.code}`} onClick={() => setRemoved((r) => new Set(r).add(c.key))}><Icon name="x" size={16} /></button>
+          </div>
         ))}
+        {kept.length === 0 && <div className="item muted">No colors left.</div>}
       </div></div>
+      {removed.size > 0 && <div><button className="btn small" onClick={() => setRemoved(new Set())}>Restore {removed.size} removed</button></div>}
+      {(isPdf || parsed.lowConfidence) && (
+        <div className="field"><label>Add a missing color</label><ColorPicker placeholder="Search by number or name" onSelect={(c) => { setRemoved((r) => { const n = new Set(r); n.delete(c.key); return n; }); setExtra((e) => (e.some((x) => x.key === c.key) ? e : [...e, c])); }} /></div>
+      )}
     </Modal>
   );
 }
@@ -247,9 +290,12 @@ function ProjectDetail({ project }) {
       {active && (
         <div className="panel stack tight">
           <label className="label">Add a color to this project</label>
-          <ColorPicker catalog={catalog} placeholder="Search by number or name" onSelect={(c) => { update((s) => ops.upsertProjectColor(s, project.id, c)); toast(`Added ${c.code}`); }} />
+          <ColorPicker placeholder="Search by number or name" onSelect={(c) => { update((s) => ops.upsertProjectColor(s, project.id, c)); toast(`Added ${c.code}`); }} />
         </div>
       )}
+
+      {active && <FabricSuggestion project={project} />}
+      <ProjectSupplies project={project} />
 
       <div className="field"><label htmlFor="pnotes">Notes</label><textarea id="pnotes" className="input" value={project.notes} onChange={(e) => set({ notes: e.target.value })} /></div>
       <div><button className="btn danger" onClick={() => setConfirmDelete(true)}>Delete project</button></div>

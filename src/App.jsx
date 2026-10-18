@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppContext } from './lib/context.js';
 import { makeCatalog } from './lib/catalog.js';
 import { emptyState, overview, conflicts } from './lib/ops.js';
+import { repairState } from './lib/migrate.js';
 import { loadState, saveState } from './lib/storage.js';
 import { BUILTIN_DMC } from './data/index.js';
 import { Icon } from './components/ui.jsx';
@@ -30,7 +31,11 @@ function parseHash() {
 
 export default function App() {
   const initial = useRef(null);
-  if (!initial.current) initial.current = loadState();
+  if (!initial.current) {
+    const loaded = loadState();
+    // Fix data saved by older versions (for example BLANC vs White) before first render.
+    initial.current = { ...loaded, state: repairState(loaded.state, makeCatalog(BUILTIN_DMC, [])) };
+  }
   const [state, setStateRaw] = useState(initial.current.state);
   const [route, setRoute] = useState(parseHash);
   const [toasts, setToasts] = useState([]);
@@ -102,18 +107,18 @@ export default function App() {
               <span className="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="4" strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg></span>
               Floss Ledger
             </div>
-            <nav className="tabs" aria-label="Sections">
-              {TABS.map(([id, label, icon]) => (
-                <a key={id} href={'#/' + id} className="tab" aria-current={route.tab === id ? 'page' : undefined}>
-                  <Icon name={icon} size={20} />
-                  <span>{label}</span>
-                  {id === 'overview' && alerts > 0 && <span className="badge-dot" aria-label={`${alerts} warnings`}>{alerts}</span>}
-                  {id === 'shopping' && toBuy > 0 && <span className="badge-dot" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }} aria-label={`${toBuy} to buy`}>{toBuy}</span>}
-                </a>
-              ))}
-            </nav>
           </div>
         </header>
+        <nav className="tabs" aria-label="Sections">
+          {TABS.map(([id, label, icon]) => (
+            <a key={id} href={'#/' + id} className="tab" aria-current={route.tab === id ? 'page' : undefined}>
+              <Icon name={icon} size={20} />
+              <span>{label}</span>
+              {id === 'overview' && alerts > 0 && <span className="badge-dot" aria-label={`${alerts} warnings`}>{alerts}</span>}
+              {id === 'shopping' && toBuy > 0 && <span className="badge-dot" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }} aria-label={`${toBuy} to buy`}>{toBuy}</span>}
+            </a>
+          ))}
+        </nav>
         <main className="main">{page}</main>
         <div className="toasts" role="status" aria-live="polite">
           {toasts.map((t) => <div key={t.id} className={'toast' + (t.kind === 'bad' ? ' bad' : '')}>{t.msg}</div>)}

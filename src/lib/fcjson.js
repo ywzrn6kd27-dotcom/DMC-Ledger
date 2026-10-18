@@ -18,7 +18,7 @@ function normBrand(sys) {
 
 export function cleanFileName(fileName = '') {
   return fileName
-    .replace(/\.(fcjson|json)$/i, '')
+    .replace(/\.(fcjson|json|oxs|xml|pdf)$/i, '')
     .replace(/[_-]?fcjson$/i, '')
     .replace(/[_]+/g, ' ')
     .trim();

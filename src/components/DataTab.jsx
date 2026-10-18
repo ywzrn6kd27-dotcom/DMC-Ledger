@@ -5,6 +5,7 @@ import { parseCatalogInput } from '../lib/catalog.js';
 import { makeBackup, readBackup, clearState } from '../lib/storage.js';
 import { download, plural } from '../lib/utils.js';
 import { FABRIC_COUNTS } from '../lib/skeins.js';
+import ColorDetails from './ColorDetails.jsx';
 import { ColorCell, Confirm, Icon, Stepper } from './ui.jsx';
 
 export default function DataTab() {
@@ -13,7 +14,7 @@ export default function DataTab() {
   const catRef = useRef(null);
   const [restore, setRestore] = useState(null);
   const [reset, setReset] = useState(false);
-  const [cc, setCc] = useState({ brand: 'DMC', code: '', name: '', hex: '#808080' });
+  const [editing, setEditing] = useState(null); // null | {} (new) | color (edit)
   const setPref = (patch) => update((s) => ({ ...s, settings: { ...s.settings, ...patch } }));
 
   const backup = () => {
@@ -38,13 +39,6 @@ export default function DataTab() {
       });
     }
     toast(`${plural(colors.length, 'color')} imported${errors.length ? `, ${errors.length} skipped: ${errors[0]}` : ''}`, errors.length && !colors.length ? 'bad' : undefined);
-  };
-
-  const addCustom = () => {
-    if (!cc.code.trim()) return toast('Enter a code.', 'bad');
-    update((s) => ({ ...s, customColors: [...s.customColors.filter((c) => !(c.brand === cc.brand.trim() && c.code === cc.code.trim())), { brand: cc.brand.trim() || 'DMC', code: cc.code.trim(), name: cc.name.trim(), hex: cc.hex.toUpperCase() }] }));
-    toast(`Saved ${cc.code}`);
-    setCc({ ...cc, code: '', name: '' });
   };
 
   const counts = `${plural(Object.keys(state.inventory).length, 'color')}, ${plural(state.projects.length, 'project')}`;
@@ -91,24 +85,19 @@ export default function DataTab() {
 
       <div className="panel stack">
         <h2>Color catalog</h2>
-        <p className="muted">{catalog.size} colors available ({state.customColors.length} custom). The built-in DMC list was typed in by hand and hex values are approximate, so correct or extend it here. Custom entries with the same code override the built-in color.</p>
-        <div className="field-grid">
-          <div className="field"><label htmlFor="cb">Brand</label><input id="cb" className="input" value={cc.brand} onChange={(e) => setCc({ ...cc, brand: e.target.value })} /></div>
-          <div className="field"><label htmlFor="ccode">Code</label><input id="ccode" className="input" value={cc.code} onChange={(e) => setCc({ ...cc, code: e.target.value })} /></div>
-          <div className="field"><label htmlFor="cname">Name</label><input id="cname" className="input" value={cc.name} onChange={(e) => setCc({ ...cc, name: e.target.value })} /></div>
-          <div className="field"><label htmlFor="chex">Color</label><input id="chex" type="color" className="input" style={{ padding: 3 }} value={cc.hex} onChange={(e) => setCc({ ...cc, hex: e.target.value })} /></div>
-        </div>
+        <p className="muted">{catalog.size} colors available ({state.customColors.length} custom). The built-in DMC list was typed in by hand and hex values are approximate, so correct or extend it here. Add multicolor (variegated) skeins and anything else missing. Custom entries with the same code override the built-in color.</p>
         <div className="row">
-          <button className="btn primary" onClick={addCustom}>Save color</button>
+          <button className="btn primary" onClick={() => setEditing({})}>Add custom color</button>
           <input ref={catRef} type="file" accept=".json,.csv,text/csv,application/json" hidden onChange={(e) => { onCatalog(e.target.files?.[0]); e.target.value = ''; }} />
           <button className="btn" onClick={() => catRef.current.click()}>Import catalog (JSON or CSV)</button>
         </div>
-        <p className="small muted">CSV needs a header row with code, name, hex and optionally brand.</p>
+        <p className="small muted">CSV needs a header row with code, name, hex and optionally brand, type (solid, variegated, metallic, other) and colors (hex codes separated by |).</p>
         {state.customColors.length > 0 && (
           <div className="panel flush"><div className="list">
             {state.customColors.map((c) => (
               <div className="item" key={c.brand + c.code}>
                 <div className="grow"><ColorCell color={c} /></div>
+                <button className="btn small" onClick={() => setEditing(c)}>Edit</button>
                 <button className="icon-btn" aria-label={`Remove ${c.code}`} onClick={() => update((s) => ({ ...s, customColors: s.customColors.filter((x) => x !== s.customColors.find((y) => y.brand === c.brand && y.code === c.code)) }))}><Icon name="trash" size={16} /></button>
               </div>
             ))}
@@ -122,6 +111,7 @@ export default function DataTab() {
         <div><button className="btn danger" onClick={() => setReset(true)}>Erase all data</button></div>
       </div>
 
+      {editing && <ColorDetails initial={editing.code ? editing : undefined} edit={!!editing.code} onClose={() => setEditing(null)} />}
       {restore && <Confirm title="Replace your data with this backup?" body={`The backup has ${plural(Object.keys(restore.inventory).length, 'color')}, ${plural(restore.projects.length, 'project')} and ${plural(restore.shopping.lists.length, 'shopping list')}. Your current data in this browser will be replaced.`} confirmLabel="Restore" danger onConfirm={() => { setState(restore); toast('Backup restored'); }} onClose={() => setRestore(null)} />}
       {reset && <Confirm title="Erase everything?" body="This cannot be undone. Download a backup first if you might want this data again." confirmLabel="Erase all" danger onConfirm={() => { clearState(); setState(null); toast('All data erased'); }} onClose={() => setReset(false)} />}
     </div>

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../lib/context.js';
 import * as ops from '../lib/ops.js';
-import { FAMILIES, fmtSkeins, naturalCodeCompare, uid, PARTIAL_OPTIONS } from '../lib/utils.js';
+import { FAMILIES, THREAD_TYPES, displayName, fmtSkeins, naturalCodeCompare, uid, PARTIAL_OPTIONS } from '../lib/utils.js';
+import ColorDetails from './ColorDetails.jsx';
 import { ColorCell, Confirm, Empty, Modal, PartialEditor, Stepper, Swatch } from './ui.jsx';
 
 const FILTERS = [
@@ -14,6 +15,7 @@ export default function Supply({ initialQuery = '' }) {
   const [q, setQ] = useState(initialQuery);
   const [filter, setFilter] = useState('all');
   const [family, setFamily] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
   const [sort, setSort] = useState('code');
   const [editing, setEditing] = useState(null);
   useEffect(() => setQ(initialQuery), [initialQuery]);
@@ -34,6 +36,7 @@ export default function Supply({ initialQuery = '' }) {
       list = list.filter(({ c }) => tokens.every((t) => c.code.toLowerCase().startsWith(t) || c.code.toLowerCase() === t || c.name.toLowerCase().includes(t) || c.family.toLowerCase().startsWith(t)));
     }
     if (family) list = list.filter((r) => r.c.family === family);
+    if (typeFilter) list = list.filter((r) => (r.c.type || 'solid') === typeFilter);
     list = list.filter((r) => {
       switch (filter) {
         case 'instock': return r.total > 0;
@@ -52,7 +55,7 @@ export default function Supply({ initialQuery = '' }) {
       color: (a, b) => FAMILIES.indexOf(a.c.family) - FAMILIES.indexOf(b.c.family) || naturalCodeCompare(a.c.code, b.c.code),
     }[sort];
     return list.sort(cmp);
-  }, [state.inventory, catalog, q, filter, family, sort, assigned, conflictKeys]);
+  }, [state.inventory, catalog, q, filter, family, typeFilter, sort, assigned, conflictKeys]);
 
   const total = Object.keys(state.inventory).length;
 
@@ -71,6 +74,9 @@ export default function Supply({ initialQuery = '' }) {
             <input className="input" type="search" placeholder="Filter by number, name or color" aria-label="Filter supply" value={q} onChange={(e) => setQ(e.target.value)} />
             <select className="input" style={{ maxWidth: 150 }} aria-label="Color family" value={family} onChange={(e) => setFamily(e.target.value)}>
               <option value="">All colors</option>{FAMILIES.map((f) => <option key={f}>{f}</option>)}
+            </select>
+            <select className="input" style={{ maxWidth: 150 }} aria-label="Thread type" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+              <option value="">All types</option>{THREAD_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
             </select>
             <select className="input" style={{ maxWidth: 160 }} aria-label="Sort" value={sort} onChange={(e) => setSort(e.target.value)}>
               <option value="code">Sort: number</option><option value="name">Sort: name</option><option value="most">Sort: most skeins</option><option value="color">Sort: color family</option>
@@ -110,6 +116,7 @@ function StockEditor({ itemKey, onClose }) {
   const c = catalog.find(it.brand, it.code) || { brand: it.brand, code: it.code, name: '', hex: '#808080', key: itemKey };
   const total = ops.totalOf(it);
   const [partialPick, setPartialPick] = useState(false);
+  const [editColor, setEditColor] = useState(false);
   const [confirmUsed, setConfirmUsed] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [projId, setProjId] = useState('');
@@ -143,7 +150,7 @@ function StockEditor({ itemKey, onClose }) {
   return (
     <Modal
       onClose={onClose}
-      head={<div className="colorcell"><Swatch hex={c.hex} size={36} /><div><h2>{c.code} <span className="muted" style={{ fontWeight: 500 }}>{c.name}</span></h2><span className="muted small">{fmtSkeins(total)} skeins · {fmtSkeins(Math.max(0, total - assignedTotal))} free</span></div></div>}
+      head={<div className="colorcell"><Swatch hex={c.hex} colors={c.colors} size={36} /><div><h2>{c.code}{displayName(c) && <span className="muted" style={{ fontWeight: 500 }}> {displayName(c)}</span>}</h2><span className="muted small">{fmtSkeins(total)} skeins · {fmtSkeins(Math.max(0, total - assignedTotal))} free{c.type && c.type !== 'solid' ? ` · ${c.type}` : ''}</span></div></div>}
       footer={<><button className="btn danger left" onClick={() => setConfirmRemove(true)}>Remove from supply</button><button className="btn primary" onClick={onClose}>Done</button></>}
     >
       <div className="field-grid">
@@ -158,6 +165,7 @@ function StockEditor({ itemKey, onClose }) {
           <button className="btn small" onClick={() => setPartialPick((v) => !v)} disabled={total === 0}>Mark a skein as partial</button>
           <button className="btn small danger" onClick={() => setConfirmUsed(true)} disabled={total === 0}>Mark used up</button>
           {it.usedUp && <span className="pill">Used up</span>}
+          {c.custom && <button className="btn small" onClick={() => setEditColor(true)}>{c.pending ? 'Add color details' : 'Edit color details'}</button>}
         </div>
         {partialPick && (
           <div className="row tight" style={{ marginTop: 6 }}>
@@ -198,6 +206,7 @@ function StockEditor({ itemKey, onClose }) {
         </div>
       </div>
 
+      {editColor && <ColorDetails edit initial={c} onClose={() => setEditColor(false)} />}
       {confirmUsed && <Confirm title="Mark as used up?" body={`This sets ${c.code} to zero skeins. You can add stock again any time.`} confirmLabel="Mark used up" danger onConfirm={() => { update((s) => ops.markUsedUp(s, itemKey)); toast(`${c.code} marked used up`); }} onClose={() => setConfirmUsed(false)} />}
       {confirmRemove && <Confirm title="Remove from supply?" body={`${c.code} ${c.name} will be removed from your supply list. Project requirements stay.`} confirmLabel="Remove" danger onConfirm={() => { update((s) => ops.removeItem(s, itemKey)); onClose(); }} onClose={() => setConfirmRemove(false)} />}
     </Modal>

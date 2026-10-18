@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useApp } from '../lib/context.js';
 import * as ops from '../lib/ops.js';
-import { parseBulk } from '../lib/bulk.js';
+import { parseBulk, rowsFromColors } from '../lib/bulk.js';
 import { fmtSkeins, uid } from '../lib/utils.js';
 import ColorPicker from './ColorPicker.jsx';
-import { ColorCell, PartialEditor, Stepper, Swatch } from './ui.jsx';
+import BulkReview from './BulkReview.jsx';
+import { ColorCell, PartialEditor, Stepper } from './ui.jsx';
 
 export default function AddFloss() {
   const { state, update, catalog, toast } = useApp();
@@ -17,10 +18,10 @@ export default function AddFloss() {
   const [minStock, setMinStock] = useState(null);
   const [recent, setRecent] = useState([]);
   const [bulk, setBulk] = useState('');
+  const [review, setReview] = useState(null);
 
   const cur = color ? state.inventory[color.key] : null;
   const assigned = color ? ops.assignedByKey(state).get(color.key) || 0 : 0;
-  const bulkParsed = useMemo(() => (bulk.trim() ? parseBulk(bulk, catalog) : null), [bulk, catalog]);
   const activeProjects = state.projects.filter(ops.isActive);
   const matched = activeProjects.find((p) => p.name.trim().toLowerCase() === projectName.trim().toLowerCase());
 
@@ -61,11 +62,14 @@ export default function AddFloss() {
     setColor(null);
   };
 
-  const addBulk = () => {
-    if (!bulkParsed?.found.length) return;
-    update((s) => bulkParsed.found.reduce((acc, f) => ops.addStock(acc, f.color, { whole: f.qty }), s));
-    toast(`Added ${bulkParsed.found.length} color${bulkParsed.found.length === 1 ? '' : 's'} to supply`);
-    setRecent((r) => [...bulkParsed.found.map((f) => ({ color: f.color, bits: `${f.qty} skein${f.qty === 1 ? '' : 's'}`, id: uid() })), ...r].slice(0, 6));
+  const openReview = () => {
+    const parsed = parseBulk(bulk, catalog);
+    if (!parsed.rows.length && !parsed.junk.length) return toast('Paste some codes first.', 'bad');
+    setReview(parsed);
+  };
+
+  const reviewed = (rows) => {
+    setRecent((r) => [...rows.map((x) => ({ color: x.color || { brand: 'DMC', code: x.code, name: '', hex: '#9AA0A6' }, bits: `${x.qty} skein${x.qty === 1 ? '' : 's'}`, id: uid() })), ...r].slice(0, 6));
     setBulk('');
   };
 
@@ -74,9 +78,9 @@ export default function AddFloss() {
       <div className="page-head"><div><h1>Add floss</h1><p className="muted">Search for a color, then record what you have.</p></div></div>
 
       <div className="panel stack">
-        <ColorPicker catalog={catalog} onSelect={select} autoFocus hint={(c) => { const t = ops.totalOf(state.inventory[c.key]); return t > 0 ? `have ${fmtSkeins(t)}` : ''; }} />
+        <ColorPicker onSelect={select} onMany={(list) => setReview({ rows: rowsFromColors(list), junk: [] })} autoFocus hint={(c) => { const t = ops.totalOf(state.inventory[c.key]); return t > 0 ? `have ${fmtSkeins(t)}` : ''; }} />
 
-        {!color && <p className="muted small">Tip: type “310” for Black, “lav” for the lavenders, or “teal” to browse a color family.</p>}
+        {!color && <p className="muted small">Tip: type “310” for Black, “lav” for the lavenders, or tap Browse to scroll the whole catalog. Codes not in the catalog can be added too.</p>}
 
         {color && (
           <div className="stack">
@@ -122,19 +126,9 @@ export default function AddFloss() {
       <details className="panel fold" style={{ padding: 0 }}>
         <summary>Bulk add by pasting codes</summary>
         <div className="stack" style={{ padding: '0 14px 14px' }}>
-          <p className="muted small">Separate with commas, spaces or new lines. Add a quantity with x or a colon: “310, 666 x2, 797:3”. Each is added as whole skeins.</p>
+          <p className="muted small">Separate with commas, spaces or new lines. Add a quantity with x or a colon: “310, 666 x2, 797:3”. You review everything before it is added, including codes that are not in the catalog.</p>
           <textarea className="input" value={bulk} onChange={(e) => setBulk(e.target.value)} placeholder="310, 666 x2, 797:3, B5200" aria-label="Codes to add" />
-          {bulkParsed && (
-            <div className="stack tight">
-              <div className="row tight">
-                {bulkParsed.found.map((f) => (
-                  <span className="pill accent" key={f.color.key}><Swatch hex={f.color.hex} size={12} w={12} /> {f.color.code} × {f.qty}</span>
-                ))}
-                {bulkParsed.unknown.map((u) => <span className="pill warn" key={u}>{u}: not found</span>)}
-              </div>
-            </div>
-          )}
-          <div><button className="btn primary" disabled={!bulkParsed?.found.length} onClick={addBulk}>Add {bulkParsed?.found.length || ''} to supply</button></div>
+          <div><button className="btn primary" disabled={!bulk.trim()} onClick={openReview}>Review</button></div>
         </div>
       </details>
 
@@ -146,6 +140,7 @@ export default function AddFloss() {
           </div>
         </div>
       )}
+      {review && <BulkReview initial={review} onClose={() => setReview(null)} onDone={reviewed} />}
     </div>
   );
 }

@@ -39,7 +39,7 @@ export default function Overview() {
             ? ghosts.map((_, i) => <span key={i} className="tile ghost" />)
             : tiles.map(({ key, c, total }) => (
                 <button key={key} className="tile" title={`${c.code} ${c.name} · ${fmtSkeins(total)} skein${total === 1 ? '' : 's'}`} onClick={() => go('supply?q=' + encodeURIComponent(c.code))}>
-                  <StitchX hex={c.hex} />
+                  <StitchX hex={c.hex} colors={c.colors} />
                   {total > 1 && <span className="n">{fmtSkeins(total)}</span>}
                 </button>
               ))}

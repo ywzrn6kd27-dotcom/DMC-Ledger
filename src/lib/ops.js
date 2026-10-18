@@ -19,8 +19,11 @@ export function emptyState() {
     inventory: {},
     projects: [],
     shopping: { lists: [{ id: GENERAL_LIST_ID, name: 'General', projectId: null, items: [] }] },
+    supplies: [],
   };
 }
+
+export const SUPPLY_CATEGORIES = ['Fabric', 'Needles', 'Hoops & frames', 'Tools', 'Storage', 'Other'];
 
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const quarters = (v) => Math.max(0, Math.round(num(v) * 4) / 4);
@@ -31,7 +34,12 @@ export function normalizeState(raw) {
   const s = { ...base, settings: { ...base.settings, ...(raw.settings || {}) } };
   s.customColors = (Array.isArray(raw.customColors) ? raw.customColors : [])
     .filter((c) => c && c.code && /^#[0-9a-f]{6}$/i.test(c.hex || ''))
-    .map((c) => ({ brand: c.brand || 'DMC', code: String(c.code), name: c.name || '', hex: c.hex.toUpperCase() }));
+    .map((c) => ({
+      brand: c.brand || 'DMC', code: String(c.code), name: c.name || '', hex: c.hex.toUpperCase(),
+      ...(c.type ? { type: c.type } : {}),
+      ...(Array.isArray(c.colors) && c.colors.length > 1 ? { colors: c.colors } : {}),
+      ...(c.pending ? { pending: true } : {}),
+    }));
   s.inventory = {};
   for (const it of Object.values(raw.inventory || {})) {
     if (!it || !it.code) continue;
@@ -58,6 +66,8 @@ export function normalizeState(raw) {
     createdAt: num(p.createdAt, Date.now()),
     completedAt: p.completedAt ?? null,
     source: p.source || null,
+    size: { w: Math.max(0, Math.floor(num(p.size?.w ?? p.source?.width))), h: Math.max(0, Math.floor(num(p.size?.h ?? p.source?.height))) },
+    margin: Math.max(0, num(p.margin, 3)),
     notes: String(p.notes || ''),
     colors: (Array.isArray(p.colors) ? p.colors : []).filter((c) => c && c.code).map((c) => {
       const brand = c.brand || 'DMC';
@@ -95,6 +105,16 @@ export function normalizeState(raw) {
   }));
   if (!lists.some((l) => l.id === GENERAL_LIST_ID)) lists.unshift(base.shopping.lists[0]);
   s.shopping = { lists };
+  const pids = new Set(s.projects.map((p) => p.id));
+  s.supplies = (Array.isArray(raw.supplies) ? raw.supplies : []).filter((i) => i && i.name).map((i) => ({
+    id: i.id || uid(),
+    name: String(i.name),
+    qty: Math.max(1, Math.round(num(i.qty, 1))),
+    category: String(i.category || 'Other'),
+    note: String(i.note || ''),
+    projectId: pids.has(i.projectId) ? i.projectId : null,
+    checked: !!i.checked,
+  }));
   return s;
 }
 
@@ -211,10 +231,10 @@ export function makeProjectColor(color, extra = {}) {
   };
 }
 
-export function makeProject({ id = uid(), name, fabricCount = 14, strands = 2, bsStrands = 1, waste = 25, source = null, colors = [] }) {
+export function makeProject({ id = uid(), name, fabricCount = 14, strands = 2, bsStrands = 1, waste = 25, source = null, size = null, colors = [] }) {
   return {
     id, name: name || 'Untitled project', status: 'planned', fabricCount, strands, bsStrands, waste,
-    createdAt: Date.now(), completedAt: null, source, notes: '', colors,
+    createdAt: Date.now(), completedAt: null, source, size: size || { w: source?.width || 0, h: source?.height || 0 }, margin: 3, notes: '', colors,
   };
 }
 
@@ -232,6 +252,7 @@ export function deleteProject(state, id) {
     ...state,
     projects: state.projects.filter((p) => p.id !== id),
     shopping: { lists: state.shopping.lists.filter((l) => l.projectId !== id) },
+    supplies: (state.supplies || []).map((i) => (i.projectId === id ? { ...i, projectId: null } : i)),
   };
 }
 
@@ -398,8 +419,9 @@ export function overview(state) {
     if (it.partials.length) partialColors++;
   }
   const reserved = [...assigned.values()].reduce((a, b) => a + b, 0);
-  const toBuy = state.shopping.lists.reduce((a, l) => a + l.items.filter((i) => !i.checked).reduce((x, i) => x + i.qty, 0), 0);
-  return { skeins, colors, partialColors, reserved, toBuy };
+  const toBuy = masterTotals(state).toBuy;
+  const suppliesToBuy = (state.supplies || []).filter((i) => !i.checked).reduce((a, i) => a + i.qty, 0);
+  return { skeins, colors, partialColors, reserved, toBuy, suppliesToBuy };
 }
 
 /* ---------- Shopping ---------- */
@@ -475,4 +497,83 @@ export function syncProjectShopping(state, projectId) {
   }
   const list = { ...base, name: project.name, items };
   return { ...state, shopping: { lists: existing ? lists.map((l) => (l === existing ? list : l)) : [...lists, list] } };
+}
+
+/* ---------- Other supplies (fabric, needles, ...) ---------- */
+
+export function addSupply(state, { name, qty = 1, category = 'Other', note = '', projectId = null }) {
+  const item = { id: uid(), name: name.trim(), qty: Math.max(1, Math.round(qty)), category: category.trim() || 'Other', note, projectId, checked: false };
+  return { ...state, supplies: [...(state.supplies || []), item] };
+}
+
+export const updateSupply = (state, id, patch) => ({ ...state, supplies: state.supplies.map((i) => (i.id === id ? { ...i, ...patch } : i)) });
+export const removeSupply = (state, id) => ({ ...state, supplies: state.supplies.filter((i) => i.id !== id) });
+export const clearBoughtSupplies = (state) => ({ ...state, supplies: state.supplies.filter((i) => !i.checked) });
+
+/* ---------- Custom colors ---------- */
+
+export function saveCustomColor(state, color) {
+  const clean = {
+    brand: (color.brand || 'DMC').trim() || 'DMC', code: String(color.code).trim(), name: (color.name || '').trim(), hex: color.hex,
+    ...(color.type && color.type !== 'solid' ? { type: color.type } : {}),
+    ...(color.colors?.length > 1 ? { colors: color.colors } : {}),
+    ...(color.pending ? { pending: true } : {}),
+  };
+  const others = state.customColors.filter((c) => !(c.brand === clean.brand && c.code === clean.code));
+  return { ...state, customColors: [...others, clean] };
+}
+
+/* ---------- Master shopping list (all projects, one row per color) ---------- */
+
+// One row per color: what all active projects need in total, what you own, and what to buy.
+// Overlap is handled by comparing the combined need with your stock, so two projects that share a
+// color do not each count the same skeins you already have. Manual list items are added on top.
+export function masterList(state) {
+  const rows = new Map();
+  const row = (src) => {
+    let r = rows.get(src.key);
+    if (!r) {
+      r = { key: src.key, brand: src.brand, code: src.code, name: src.name, hex: src.hex, demand: 0, manual: 0, uses: [], manualItems: [] };
+      rows.set(src.key, r);
+    }
+    return r;
+  };
+  for (const p of state.projects) {
+    if (!isActive(p)) continue;
+    for (const c of p.colors) {
+      const need = needFor(p, c);
+      if (need <= 0) continue;
+      const r = row(c);
+      r.demand += need;
+      r.uses.push({ projectId: p.id, name: p.name, need });
+    }
+  }
+  for (const l of state.shopping.lists) {
+    for (const i of l.items) {
+      if (i.checked || i.auto) continue;
+      const r = row(i);
+      r.manual += i.qty;
+      r.manualItems.push({ listId: l.id, itemId: i.id, listName: l.name, qty: i.qty });
+    }
+  }
+  return [...rows.values()].map((r) => {
+    const owned = totalOf(state.inventory[r.key]);
+    const projectBuy = Math.max(0, Math.ceil(r.demand - owned - EPS));
+    return { ...r, owned, projectBuy, needed: r.demand + r.manual, toBuy: projectBuy + r.manual };
+  });
+}
+
+export function masterTotals(state) {
+  const rows = masterList(state);
+  return { toBuy: rows.reduce((a, r) => a + r.toBuy, 0), colors: rows.filter((r) => r.toBuy > 0).length, rows: rows.length };
+}
+
+// Record a purchase: the skeins to buy go into supply and manual items for that color are checked off.
+export function markMasterBought(state, key) {
+  const r = masterList(state).find((x) => x.key === key);
+  if (!r || r.toBuy <= 0) return state;
+  let next = addStock(state, r, { whole: r.toBuy });
+  const ids = new Set(r.manualItems.map((m) => m.itemId));
+  next = { ...next, shopping: { lists: next.shopping.lists.map((l) => ({ ...l, items: l.items.map((i) => (ids.has(i.id) ? { ...i, checked: true, added: true } : i)) })) } };
+  return next;
 }

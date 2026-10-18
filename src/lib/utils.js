@@ -37,8 +37,30 @@ export function rgbToHsl(r, g, b) {
 }
 
 export const FAMILIES = [
-  'Red', 'Pink', 'Orange', 'Yellow', 'Brown', 'Green', 'Teal', 'Blue', 'Purple', 'Gray', 'White', 'Black',
+  'Red', 'Pink', 'Orange', 'Yellow', 'Brown', 'Green', 'Teal', 'Blue', 'Purple', 'Gray', 'White', 'Black', 'Multi',
 ];
+
+export const THREAD_TYPES = [
+  ['solid', 'Solid'],
+  ['variegated', 'Variegated'],
+  ['metallic', 'Metallic'],
+  ['other', 'Other'],
+];
+export const PENDING_HEX = '#9AA0A6';
+
+// Name to show under a code. Hides names that just repeat the code (White / White).
+export function displayName(c) {
+  const n = (c?.name || '').trim();
+  return n && n.toLowerCase() !== String(c?.code || '').trim().toLowerCase() ? n : '';
+}
+
+// CSS background for a thread: a gradient for multicolor skeins, flat otherwise.
+export function threadBackground(c) {
+  const cols = c?.colors?.length > 1 ? c.colors : null;
+  if (!cols) return c?.hex || '#808080';
+  const stops = cols.map((h, i) => `${h} ${Math.round((i / (cols.length - 1)) * 100)}%`).join(', ');
+  return `linear-gradient(110deg, ${stops})`;
+}
 
 // Rough browsing families derived from the hex value. Good enough to filter by,
 // not meant to match DMC's own color families.

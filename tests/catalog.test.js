@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { makeCatalog, parseCatalogInput } from '../src/lib/catalog.js';
+import { makeCatalog, parseCatalogInput, canonicalCode } from '../src/lib/catalog.js';
 import { parseBulk } from '../src/lib/bulk.js';
 
 const dmc = JSON.parse(readFileSync(new URL('../src/data/dmc.json', import.meta.url), 'utf8'));
@@ -41,11 +41,29 @@ test('custom colors extend and override the builtin list', () => {
   assert.equal(c.size, cat.size + 1);
 });
 
-test('bulk parser handles quantities and unknowns', () => {
-  const r = parseBulk('310, 666 x2, 797:3\nB5200 310 zzz 99999', cat);
-  const by = Object.fromEntries(r.found.map((f) => [f.color.code, f.qty]));
-  assert.deepEqual(by, { 310: 2, 666: 2, 797: 3, B5200: 1 });
-  assert.ok(r.unknown.includes('99999'));
+test('bulk parser: quantities, aliases, unknown codes and unreadable text', () => {
+  const r = parseBulk('310, 666 x2, 797:3\nB5200 310 BLANC 99999 hello x2 e5200 4050 x 3', cat);
+  const known = Object.fromEntries(r.rows.filter((x) => x.color).map((x) => [x.color.code, x.qty]));
+  assert.deepEqual(known, { 310: 2, 666: 2, 797: 3, B5200: 1, White: 1 });
+  const unknown = Object.fromEntries(r.rows.filter((x) => !x.color).map((x) => [x.code, x.qty]));
+  assert.deepEqual(unknown, { 99999: 1, E5200: 1, 4050: 3 });
+  assert.deepEqual(r.junk.sort(), ['hello', 'x2']);
+});
+
+test('BLANC is understood as White, and searchable', () => {
+  assert.equal(cat.resolveCode('BLANC').code, 'White');
+  assert.equal(cat.search('blanc')[0].code, 'White');
+  assert.equal(canonicalCode(cat, 'DMC', 'BLANC'), 'White');
+  assert.equal(canonicalCode(cat, 'DMC', 'ecru'), 'Ecru');
+  assert.equal(canonicalCode(cat, 'DMC', '4050'), null);
+});
+
+test('variegated custom colors keep a gradient and are tagged Multi', () => {
+  const c = makeCatalog(dmc, [{ brand: 'DMC', code: '4050', name: 'Test', hex: '#FF0000', type: 'variegated', colors: ['#FF0000', '#0000FF'] }]);
+  const v = c.find('DMC', '4050');
+  assert.equal(v.family, 'Multi');
+  assert.equal(v.colors.length, 2);
+  assert.equal(v.type, 'variegated');
 });
 
 test('catalog import accepts JSON and CSV', () => {
